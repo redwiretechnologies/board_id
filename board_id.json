@@ -1,0 +1,30 @@
+{
+    "type": [ "SOM",
+              "Carrier",
+              "Transceiver",
+              "Personality"],
+    "id": {
+            "SOM"         : [ "TE0820-2CG",
+                              "TE0820-2EG",
+                              "TE0820-3CG",
+                              "TE0820-3EG",
+                              "TE0820-4CG",
+                              "TE0820-4EV",
+                              "TE0803-3EG",
+                              "TE0803-4EV",
+                              "TE0808-9EG",
+                              "TE0808-15EG" ],
+            "Carrier"     : [ "Oxygen",
+                              "Carbon",
+                              "RTSA",
+                              "Radio1" ],
+            "Transceiver" : [ "Eagle Ray 9361",
+                              "Eagle Ray 9364",
+                              "Devil Ray 9002" ],
+            "Personality" : [ "Bismuth",
+                              "Germanium",
+                              "Tellurium",
+                              "Selenium" ]
+          },
+    "no_dts": [ "Germanium" ]
+}

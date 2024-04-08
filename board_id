@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import smbus
+import json
+import time
+from datetime import date
+
+# Open the JSON file which defines all of the boards
+f = open("{}/board_id.json".format(os.path.realpath(os.path.dirname(__file__))))
+board_id_lookup = json.load(f)
+f.close()
+
+# Interface class to a board EEPROM where the user can set values to have the EEPROMs written with a consistent format
+class identifier:
+
+    def __init__(self, i2cbus, address, board_type=0, board_id=0, board_rev="0.0", sn="MY SERIAL NUMBER", batch_date="MY BATCH DATE", test_date=date.today().strftime("%m/%d/%y"), optional=False):
+        self.bus = smbus.SMBus(i2cbus)
+        self.address = address
+        self.optional = optional
+
+        self.probe()
+
+        self.set_params(board_type, board_id, board_rev, sn, batch_date, test_date)
+
+    def set_params(self, board_type, board_id, board_rev, sn, batch_date, test_date):
+        self.board_type = board_type
+        self.board_id = board_id
+        self.board_rev = board_rev
+        self.sn = sn
+        self.batch_date = batch_date
+        self.test_date = test_date
+
+        self.short_form = self.calc_short_form()
+
+    # Probes the interface to determine if it is accessible
+    def probe(self):
+        try:
+            self.bus.read_byte_data(self.address, 0x00)
+            self.accessible = True
+        except:
+            self.accessible = False
+
+    # Put together the short form identifier
+    # [8-bit board type, 8-bit board ID, [4-bit Major revision, 4-bit Minor revision]]
+    def calc_short_form(self):
+        board_rev_list = [int(i) for i in self.board_rev.split('.')]
+        if len(board_rev_list) > 1:
+            board_rev = board_rev_list[0] << 4 | board_rev_list[1]
+        else:
+            board_rev = board_rev_list[0] << 4
+        return [self.board_type, self.board_id, board_rev]
+
+    # Writes a string to the given register of the EEPROM with the given field width (fw)
+    def write_string(self, register, fw, s):
+        adj = s.center(fw, ' ')
+        self.bus.write_i2c_block_data(self.address, register, [ord(a) for a in adj])
+        time.sleep(0.1)
+
+    # Read an array of bytes from the given register of the EEPROM and convert it back to a string
+    def read_string(self, register, fw):
+        byte_list = self.bus.read_i2c_block_data(self.address, register, fw)
+        return ''.join([chr(a) for a in byte_list]).strip()
+
+    # Write all of the parameters to their proper addresses in the EEPROM
+    def write(self):
+        if not self.accessible:
+            return
+        t = board_id_lookup["type"][self.board_type]
+        n = board_id_lookup["id"][t][self.board_id]
+        r = "Rev" + self.board_rev
+
+        self.write_string(0x00, 16, ' ')
+        self.write_string(0x10, 16, t)
+        self.write_string(0x20, 16, n)
+        self.write_string(0x30, 16, r)
+        self.write_string(0x40, 16, self.sn)
+        self.write_string(0x50, 16, self.batch_date)
+        self.write_string(0x60, 16, self.test_date)
+        self.write_string(0x70, 16, ' ')
+
+        self.bus.write_i2c_block_data(self.address, 0x7d, self.short_form)
+
+    # Read all the parameters from the EEPROM
+    def read_strings(self):
+        print("")
+        if not self.accessible:
+            print("BOARD IS NOT PRESENT".center(29, ' '))
+        else:
+            board_type = self.read_string(0x10, 16)
+            board_name = self.read_string(0x20, 16)
+            board_rev  = self.read_string(0x30, 16)
+            board_sn   = self.read_string(0x40, 16)
+            board_bd   = self.read_string(0x50, 16)
+            board_td   = self.read_string(0x60, 16)
+
+            print("Board Type:  {}".format(board_type))
+            print("Board Name:  {}".format(board_name))
+            print("Revision:    {}".format(board_rev))
+            print("S/N:         {}".format(board_sn))
+            print("Batch Date:  {}".format(board_bd))
+            print("Test Date:   {}".format(board_td))
+
+        print("")
+        print("-----------------------------")
+
+    # Iterate over each selection or text entry for user input. Then store these as internal parameters
+    def get_selections(self):
+        t  = board_id_lookup["type"][self.board_type]
+        n  = get_item_selection(board_id_lookup["id"][t], t, default=self.board_id)
+        r  = get_user_input("Revision", 16, "Rev", default=self.board_rev)[3:]
+        if '.' not in r:
+            r = r+'.0'
+        sn = get_user_input("Serial Number", 16, default=self.sn)
+        bd = get_user_input("Batch ID/Date", 16, default=self.batch_date)
+        td = get_user_input("Test Date", 16, default=self.test_date, override={'today': date.today().strftime("%m/%d/%y")})
+
+        self.set_params(self.board_type, n, r, sn, bd, td)
+
+    # Read from each field in the EEPROM. Store the current values as internal parameters
+    def read(self):
+        short_form = self.bus.read_i2c_block_data(self.address, 0x7d, 3)
+        n  = short_form[1]
+        r  = short_form[2]
+        r  = str(r>>4) + "." + str(r & 15)
+        sn = self.read_string(0x40, 16)
+        bd = self.read_string(0x50, 16)
+        td = self.read_string(0x60, 16)
+
+        self.set_params(self.board_type, n, r, sn, bd, td)
+
+# Class that defines all of the possible EEPROMs for each board that could be connected to a radio
+# This makes it easier to operate on all of them
+class radio:
+
+    def __init__(self):
+        self.SOM = identifier(0, 0x50, board_type=0)
+        self.Carrier = identifier(1, 0x50, board_type=1)
+        self.Transceiver0 = identifier(1, 0x51, board_type=2)
+        self.Transceiver1 = identifier(1, 0x54, board_type=2, optional=True)
+        self.Personality0 = identifier(1, 0x52, board_type=3, optional=True)
+        self.Personality1 = identifier(1, 0x53, board_type=3, optional=True)
+        self.Carbon_Personality0 = identifier(0, 0x52, board_type=3, optional=True)
+        self.Carbon_Personality1 = identifier(0, 0x53, board_type=3, optional=True)
+        self.CARP_Personality1 = identifier(0, 0x55, board_type=3, optional=True)
+        self.CARP_Personality2 = identifier(0, 0x3C, board_type=3, optional=True)
+        self.CARP_Personality3 = identifier(0, 0x2C, board_type=3, optional=True)
+
+    # Print the data stored in the EEPROM for each accessible i2c EEPROM
+    def print(self):
+        members = vars(self)
+        print("")
+        print("-----------------------------")
+        for n, i in members.items():
+            if i.accessible or not i.optional:
+                print(n.center(29, ' '))
+                print("-----------------------------")
+                i.read_strings()
+        print("")
+
+    # Get user input for the values to write for the EEPROM to each accessible i2c EEPROM
+    # If update is set to True, get the values currently stored in the EEPROM and use these as defaults
+    def write(self, update):
+        members = vars(self)
+        for n, i in members.items():
+            if i.accessible:
+                if update:
+                    i.read()
+                print("Collecting Parameters for {}".format(n))
+                print("")
+                i.get_selections()
+                print("")
+                print("Writing Parameters for {}".format(n))
+                i.write()
+
+# Get a selection from a list of potential options
+# Accepts a default value to use if the user does not input anything
+def get_item_selection(selection_list, item_name, default=0):
+    selecting = True
+    valid_selections = [i for i in range(0, len(selection_list)+1)]
+    if int(len(selection_list)) == 1:
+        s = [1]
+    else:
+        while selecting:
+            print("Select {} (default={})".format(item_name, default))
+            for i, x in enumerate(selection_list):
+                print("  {}: {}".format(i, x))
+            print("")
+            selection = input("Selection: ")
+            if selection == "":
+                selection = str(default)
+            s = [int(i) for i in selection.split()]
+            selecting = False
+            for a in s:
+                if a not in valid_selections:
+                    selecting = True
+                    print("Invalid selection {}".format(a))
+                elif len(s) > 1:
+                    selecting = True
+                    print("Please only make one selection")
+                else:
+                    return a
+
+# Gets user input from the command line. Verifies it is less than the field width (fw).
+# Accepts a default value to use if the user does not input anything
+# Accepts an override dictionary that will translate from a specific user string to a specific value (i.e. "today": date.today())
+def get_user_input(field_name, fw, extra_text="", default="", override={}):
+    selecting = True
+
+    while selecting:
+        user_input = input("{} (default={}): {}".format(field_name, default, extra_text))
+        selecting = False
+        if user_input == "":
+            user_input = default
+        user_input = extra_text + user_input
+        if len(user_input) > fw:
+            print("Maximum field width is {} characters".format(fw))
+            print("")
+            selecting = True
+        if user_input in list(override.keys()):
+            user_input = override[user_input]
+    return user_input
+
+
+# Basic function to parse command line arguments
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-w", "--write", help="Write to boards",  action="store_true")
+    parser.add_argument("-r", "--read",  help="Read from boards", action="store_true")
+    parser.add_argument("--update", help="Pull the current values and use these as defaults to update the EEPROMs", action="store_true")
+    args = parser.parse_args()
+    return args
+
+if __name__=="__main__":
+    my_radio = radio()
+
+    args = parse_args()
+    if args.write:
+        my_radio.write(args.update)
+    elif args.update:
+        my_radio.write(True)
+    if args.read:
+        my_radio.print()
