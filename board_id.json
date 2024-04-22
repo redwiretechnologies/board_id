@@ -26,5 +26,16 @@
                               "Tellurium",
                               "Selenium" ]
           },
-    "no_dts": [ "Germanium" ]
+    "no_dts": [ "Germanium" ],
+    "major_rev_map": {
+                       "Bismuth":   { "1" : "1.0",
+                                      "2" : "2.0"
+                                    },
+                       "Tellurium": { "1" : "1.0",
+                                      "2" : "1.0"
+                                    },
+                       "Selenium":  { "1" : "1.0",
+                                      "2" : "1.0"
+                                    }
+                    }
 }

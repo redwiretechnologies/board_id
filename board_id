@@ -7,6 +7,9 @@ import json
 import time
 from datetime import date
 
+WRITE_PROTECT=1
+CLEAR_PROTECT=1
+
 # Open the JSON file which defines all of the boards
 f = open("{}/board_id.json".format(os.path.realpath(os.path.dirname(__file__))))
 board_id_lookup = json.load(f)
@@ -15,10 +18,11 @@ f.close()
 # Interface class to a board EEPROM where the user can set values to have the EEPROMs written with a consistent format
 class identifier:
 
-    def __init__(self, i2cbus, address, board_type=0, board_id=0, board_rev="0.0", sn="MY SERIAL NUMBER", batch_date="MY BATCH DATE", test_date=date.today().strftime("%m/%d/%y"), optional=False):
+    def __init__(self, i2cbus, address, board_type=0, board_id=0, board_rev="0.0", sn="MY SERIAL NUMBER", batch_date="MY BATCH DATE", test_date=date.today().strftime("%m/%d/%y"), optional=False, base_addr=0x80):
         self.bus = smbus.SMBus(i2cbus)
         self.address = address
         self.optional = optional
+        self.base_addr = base_addr
 
         self.probe()
 
@@ -71,16 +75,16 @@ class identifier:
         n = board_id_lookup["id"][t][self.board_id]
         r = "Rev" + self.board_rev
 
-        self.write_string(0x00, 16, ' ')
-        self.write_string(0x10, 16, t)
-        self.write_string(0x20, 16, n)
-        self.write_string(0x30, 16, r)
-        self.write_string(0x40, 16, self.sn)
-        self.write_string(0x50, 16, self.batch_date)
-        self.write_string(0x60, 16, self.test_date)
-        self.write_string(0x70, 16, ' ')
+        self.write_string(self.base_addr, 16, ' ')
+        self.write_string(self.base_addr+0x10, 16, t)
+        self.write_string(self.base_addr+0x20, 16, n)
+        self.write_string(self.base_addr+0x30, 16, r)
+        self.write_string(self.base_addr+0x40, 16, self.sn)
+        self.write_string(self.base_addr+0x50, 16, self.batch_date)
+        self.write_string(self.base_addr+0x60, 16, self.test_date)
+        self.write_string(self.base_addr+0x70, 16, ' ')
 
-        self.bus.write_i2c_block_data(self.address, 0x7d, self.short_form)
+        self.bus.write_i2c_block_data(self.address, self.base_addr+0x7d, self.short_form)
 
     # Read all the parameters from the EEPROM
     def read_strings(self):
@@ -88,12 +92,12 @@ class identifier:
         if not self.accessible:
             print("BOARD IS NOT PRESENT".center(29, ' '))
         else:
-            board_type = self.read_string(0x10, 16)
-            board_name = self.read_string(0x20, 16)
-            board_rev  = self.read_string(0x30, 16)
-            board_sn   = self.read_string(0x40, 16)
-            board_bd   = self.read_string(0x50, 16)
-            board_td   = self.read_string(0x60, 16)
+            board_type = self.read_string(self.base_addr+0x10, 16)
+            board_name = self.read_string(self.base_addr+0x20, 16)
+            board_rev  = self.read_string(self.base_addr+0x30, 16)
+            board_sn   = self.read_string(self.base_addr+0x40, 16)
+            board_bd   = self.read_string(self.base_addr+0x50, 16)
+            board_td   = self.read_string(self.base_addr+0x60, 16)
 
             print("Board Type:  {}".format(board_type))
             print("Board Name:  {}".format(board_name))
@@ -120,22 +124,30 @@ class identifier:
 
     # Read from each field in the EEPROM. Store the current values as internal parameters
     def read(self):
-        short_form = self.bus.read_i2c_block_data(self.address, 0x7d, 3)
+        short_form = self.bus.read_i2c_block_data(self.address, self.base_addr+0x7d, 3)
         n  = short_form[1]
         r  = short_form[2]
         r  = str(r>>4) + "." + str(r & 15)
-        sn = self.read_string(0x40, 16)
-        bd = self.read_string(0x50, 16)
-        td = self.read_string(0x60, 16)
+        sn = self.read_string(self.base_addr+0x40, 16)
+        bd = self.read_string(self.base_addr+0x50, 16)
+        td = self.read_string(self.base_addr+0x60, 16)
 
         self.set_params(self.board_type, n, r, sn, bd, td)
+
+    def clear(self, half):
+        range_top = 0xff
+        if half:
+            range_top = 0x7f
+        for i in range(0x00, range_top, 0x10):
+            self.bus.write_i2c_block_data(self.address, i, [0xff for j in range(0, 0x1f)])
+            time.sleep(0.1)
 
 # Class that defines all of the possible EEPROMs for each board that could be connected to a radio
 # This makes it easier to operate on all of them
 class radio:
 
     def __init__(self):
-        self.SOM = identifier(0, 0x50, board_type=0)
+        self.SOM = identifier(0, 0x50, board_type=0, base_addr=0x00)
         self.Carrier = identifier(1, 0x50, board_type=1)
         self.Transceiver0 = identifier(1, 0x51, board_type=2)
         self.Transceiver1 = identifier(1, 0x54, board_type=2, optional=True)
@@ -173,6 +185,12 @@ class radio:
                 print("")
                 print("Writing Parameters for {}".format(n))
                 i.write()
+
+    def clear(self, half):
+        members = vars(self)
+        for n, i in members.items():
+            if i.accessible:
+                i.clear(half)
 
 # Get a selection from a list of potential options
 # Accepts a default value to use if the user does not input anything
@@ -228,6 +246,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-w", "--write", help="Write to boards",  action="store_true")
     parser.add_argument("-r", "--read",  help="Read from boards", action="store_true")
+    parser.add_argument("-c", "--clear", help="Clear all boards", action="store_true")
+    parser.add_argument("--half", help="Clear the front half of the EEPROM for all boards", action="store_true")
     parser.add_argument("--update", help="Pull the current values and use these as defaults to update the EEPROMs", action="store_true")
     args = parser.parse_args()
     return args
@@ -236,9 +256,20 @@ if __name__=="__main__":
     my_radio = radio()
 
     args = parse_args()
+    if args.clear or args.half:
+        if CLEAR_PROTECT or WRITE_PROTECT:
+            print("WRITE_PROTECT or CLEAR_PROTECT enabled. To remove, change WRITE_PROTECT=0 and CLEAR_PROTECT=0 in /usr/bin/board_id")
+        else:
+            my_radio.clear(args.half)
     if args.write:
-        my_radio.write(args.update)
+        if WRITE_PROTECT:
+            print("WRITE_PROTECT enabled. To remove, change WRITE_PROTECT=0 in /usr/bin/board_id")
+        else:
+            my_radio.write(args.update)
     elif args.update:
-        my_radio.write(True)
+        if WRITE_PROTECT:
+            print("WRITE_PROTECT enabled. To remove, change WRITE_PROTECT=0 in /usr/bin/board_id")
+        else:
+            my_radio.write(True)
     if args.read:
         my_radio.print()
